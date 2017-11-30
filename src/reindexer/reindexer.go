@@ -6,11 +6,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"solr"
 	"strings"
 	"time"
 )
 
-func parseConnectionParameters() (*cb.CouchbaseParams, error) {
+type programParams struct {
+	cb   *cb.CouchbaseParams
+	solr *solr.SolrConnectionParams
+}
+
+func parseConnectionParameters() (*programParams, error) {
 
 	paramURI := "couchbaseUri"
 	paramBucket := "bucket"
@@ -18,8 +24,10 @@ func parseConnectionParameters() (*cb.CouchbaseParams, error) {
 	paramView := "view"
 	paramStartDate := "start"
 	paramEndDate := "end"
+	paramSolrHost := "solrHost"
+	paramSolrPort := "solrPort"
 
-	cbURI := flag.String(paramURI, "couchbase://localhost", "the couchbase connection uri")
+	cbURI := flag.String(paramURI, "", "the couchbase connection uri (such as couchbase://localhost)")
 	cbBucket := flag.String(paramBucket, "", "couchbase bucket")
 	cbBucketPwd := flag.String(paramBucketPwd, "", "couchbase bucket password")
 	cbView := flag.String(paramView, "", "the reindexer view name")
@@ -29,19 +37,35 @@ func parseConnectionParameters() (*cb.CouchbaseParams, error) {
 	cbStart := flag.String(paramStartDate, "", "Starting date in the format YYYYMMDD")
 	cbEnd := flag.String(paramEndDate, "", "Ending date in the format YYYYMMDD")
 	cbPrefix := flag.String("prefix", "mutation", "Dump a prefix in front of ids")
+	solrHost := flag.String(paramSolrHost, "", "Solr hostname")
+	solrPort := flag.Uint(paramSolrPort, 8983, "Solr port")
+	solrIndex := flag.String("solrIndex", "onecms", "Solr index name")
 
 	flag.Parse()
 
-	if *cbURI == "" {
-		return nil, errors.New("missing " + paramURI + " parameter")
+	var cbDesignName string
+	var cbViewName string
+
+	if (*solrHost == "") && (*cbURI == "") {
+		return nil, errors.New("missing " + paramURI + " or " + paramSolrHost + " parameter")
 	}
 
-	if *cbBucket == "" {
-		return nil, errors.New("missing " + paramBucket + " parameter")
-	}
+	if *cbURI != "" {
+		if *cbBucket == "" {
+			return nil, errors.New("missing " + paramBucket + " parameter")
+		}
 
-	if *cbView == "" {
-		return nil, errors.New("missing " + paramView + " parameter")
+		if *cbView == "" {
+			return nil, errors.New("missing " + paramView + " parameter")
+		}
+
+		idx := strings.Index(*cbView, ":")
+		if (idx < 0) || (idx == len(*cbView)) {
+			return nil, errors.New("The parameter " + paramView + " must be in the format \"designdocname:viewname\"")
+		}
+
+		cbDesignName = (*cbView)[0:idx]
+		cbViewName = (*cbView)[idx+1:]
 	}
 
 	var startTime *time.Time
@@ -62,28 +86,39 @@ func parseConnectionParameters() (*cb.CouchbaseParams, error) {
 		endTime = &ts
 	}
 
-	idx := strings.Index(*cbView, ":")
-	if (idx < 0) || (idx == len(*cbView)) {
-		return nil, errors.New("The parameter " + paramView + " must be in the format \"designdocname:viewname\"")
+	var cbPtr *cb.CouchbaseParams
+	var solrPtr *solr.SolrConnectionParams
+
+	if *cbURI != "" {
+		cbPtr = &cb.CouchbaseParams{
+			Uri:        *cbURI,
+			BucketName: *cbBucket,
+			BucketPwd:  *cbBucketPwd,
+			DesignName: cbDesignName,
+			ViewName:   cbViewName,
+			Params: cb.CouchbaseQueryParams{
+				Development: *cbDevView,
+				Limit:       *cbLimit,
+				Skip:        *cbSkip,
+				StartTime:   startTime,
+				EndTime:     endTime,
+				Prefix:      *cbPrefix,
+			},
+		}
 	}
-
-	cbDesignName := (*cbView)[0:idx]
-	cbViewName := (*cbView)[idx+1:]
-
-	return &cb.CouchbaseParams{
-		Uri:        *cbURI,
-		BucketName: *cbBucket,
-		BucketPwd:  *cbBucketPwd,
-		DesignName: cbDesignName,
-		ViewName:   cbViewName,
-		Params: cb.CouchbaseQueryParams{
-			Development: *cbDevView,
-			Limit:       *cbLimit,
-			Skip:        *cbSkip,
-			StartTime:   startTime,
-			EndTime:     endTime,
-			Prefix:      *cbPrefix,
-		},
+	if *solrHost != "" {
+		solrPtr = solr.NewSolrConnectionParams(*solrHost, *solrPort, *solrIndex)
+		(*solrPtr).Params = solr.SolrQueryParams{
+			Limit:     *cbLimit,
+			Skip:      *cbSkip,
+			StartTime: startTime,
+			EndTime:   endTime,
+			Prefix:    *cbPrefix,
+		}
+	}
+	return &programParams{
+		cb:   cbPtr,
+		solr: solrPtr,
 	}, nil
 }
 
@@ -94,7 +129,7 @@ func usage(msg string) {
 	os.Exit(1)
 }
 
-func getParamsOrUsage() *cb.CouchbaseParams {
+func getParamsOrUsage() *programParams {
 	params, err := parseConnectionParameters()
 	if err != nil {
 		usage(err.Error())
@@ -102,19 +137,25 @@ func getParamsOrUsage() *cb.CouchbaseParams {
 	return params
 }
 
-func main() {
-	params := getParamsOrUsage()
-
+func queryCouchbase(params *cb.CouchbaseParams) {
 	q, err := params.Connect()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting: %s\n", err.Error())
+		return
 	}
 
 	f := func(m map[string]interface{}) bool {
+		var value string
+		value = m["value"].(string)
+		offset := 7
+		idx := offset + strings.Index(value[offset:], ":")
+		if idx > offset {
+			value = value[0:idx]
+		}
 		if params.Params.Prefix != "" {
-			fmt.Printf("%s:%s\n", params.Params.Prefix, m["value"])
+			fmt.Printf("%s:%s\n", params.Params.Prefix, value)
 		} else {
-			fmt.Printf("%s\n", m["value"])
+			fmt.Printf("%s\n", value)
 		}
 		return true
 	}
@@ -123,6 +164,42 @@ func main() {
 
 	if params.Params.Limit > 0 {
 		fmt.Fprintf(os.Stderr, "For next batch run with -skip=%d\n", params.Params.Skip+counter)
+	}
+}
+
+func querySolr(solr *solr.SolrConnectionParams) {
+	conn, err := solr.Connect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error connecting: %s\n", err.Error())
+		return
+	}
+
+	prefix := solr.Params.Prefix
+
+	f := func(m map[string]interface{}) bool {
+		if prefix != "" {
+			fmt.Printf("%s:%s\n", prefix, m["id"])
+		} else {
+			fmt.Printf("%s\n", m["id"])
+		}
+		return true
+	}
+
+	_, err2 := conn.Query("id:onecms*", &f)
+	if err2 != nil {
+		fmt.Fprintf(os.Stderr, "Error querying: %s\n", err2.Error())
+		return
+	}
+}
+
+func main() {
+	params := getParamsOrUsage()
+
+	if params.cb != nil {
+		queryCouchbase(params.cb)
+	}
+	if params.solr != nil {
+		querySolr(params.solr)
 	}
 
 }
