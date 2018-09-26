@@ -40,6 +40,11 @@ func parseConnectionParameters() (*programParams, error) {
 	solrHost := flag.String(paramSolrHost, "", "Solr hostname")
 	solrPort := flag.Uint(paramSolrPort, 8983, "Solr port")
 	solrIndex := flag.String("solrIndex", "onecms", "Solr index name")
+	useUnversioned := flag.Bool("unversioned", false, "output unversioned ids")
+
+	if *cbPrefix == "deletion" && !*useUnversioned {
+		fmt.Fprintf(os.Stderr, "deletion mutation expect unversioned ids, use -unversioned\n")
+	}
 
 	flag.Parse()
 
@@ -103,6 +108,7 @@ func parseConnectionParameters() (*programParams, error) {
 				StartTime:   startTime,
 				EndTime:     endTime,
 				Prefix:      *cbPrefix,
+				Unversioned: *useUnversioned,
 			},
 		}
 	}
@@ -148,9 +154,11 @@ func queryCouchbase(params *cb.CouchbaseParams) {
 		var value string
 		value = m["value"].(string)
 		offset := 7
-		idx := offset + strings.Index(value[offset:], ":")
-		if idx > offset {
-			value = value[0:idx]
+		if params.Params.Unversioned {
+			idx := offset + strings.Index(value[offset:], ":")
+			if idx > offset {
+				value = value[0:idx]
+			}
 		}
 		if params.Params.Prefix != "" {
 			fmt.Printf("%s:%s\n", params.Params.Prefix, value)
@@ -193,6 +201,10 @@ func querySolr(solr *solr.SolrConnectionParams) {
 }
 
 func main() {
+	version := "1.0.0"
+
+	fmt.Fprintf(os.Stderr, "Version %s\n", version)
+
 	params := getParamsOrUsage()
 
 	if params.cb != nil {

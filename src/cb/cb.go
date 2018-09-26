@@ -16,6 +16,7 @@ type CouchbaseQueryParams struct {
 	StartTime   *time.Time
 	EndTime     *time.Time
 	Prefix      string
+	Unversioned bool
 }
 
 type CouchbaseParams struct {
